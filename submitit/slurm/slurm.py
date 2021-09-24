@@ -34,13 +34,14 @@ def read_job_id(job_id: str) -> tp.List[Tuple[str, ...]]:
     else:
         main_id, *array_id = job_id.split("_", 1)
         if not array_id:
-            return [(main_id,)]
+            return [(main_id, )]
         # there is an array
         array_num = str(int(array_id[0]))  # trying to cast to int to make sure we understand
         return [(main_id, array_num)]
 
 
 class SlurmInfoWatcher(core.InfoWatcher):
+
     def _make_command(self) -> Optional[List[str]]:
         # asking for array id will return all status
         # on the other end, asking for each and every one of them individually takes a huge amount of time
@@ -85,14 +86,10 @@ class SlurmInfoWatcher(core.InfoWatcher):
                 multi_split_job_id = read_job_id(job_id)
             except Exception as e:
                 # Array id are sometimes displayed with weird chars
-                warnings.warn(
-                    f"Could not interpret {job_id} correctly (please open an issue):\n{e}", DeprecationWarning
-                )
+                warnings.warn(f"Could not interpret {job_id} correctly (please open an issue):\n{e}", DeprecationWarning)
                 continue
             for split_job_id in multi_split_job_id:
-                all_stats[
-                    "_".join(split_job_id[:2])
-                ] = stats  # this works for simple jobs, or job array unique instance
+                all_stats["_".join(split_job_id[:2])] = stats  # this works for simple jobs, or job array unique instance
                 # then, deal with ranges:
                 if len(split_job_id) >= 3:
                     for index in range(int(split_job_id[1]), int(split_job_id[2]) + 1):
@@ -152,7 +149,7 @@ def _parse_node_group(node_list: str, pos: int, parsed: List[str]) -> int:
             return pos + 1
         if c == "[":
             last_pos = node_list.index("]", pos)
-            suffixes = _expand_id_suffix(node_list[pos + 1 : last_pos])
+            suffixes = _expand_id_suffix(node_list[pos + 1:last_pos])
             prefixes = [prefix + suffix for prefix in prefixes for suffix in suffixes]
             pos = last_pos + 1
         else:
@@ -299,16 +296,12 @@ class SlurmExecutor(core.PicklingExecutor):
         in_valid_parameters = sorted(set(kwargs) - set(defaults))
         if in_valid_parameters:
             string = "\n  - ".join(f"{x} (default: {repr(y)})" for x, y in sorted(defaults.items()))
-            raise ValueError(
-                f"Unavailable parameter(s): {in_valid_parameters}\nValid parameters are:\n  - {string}"
-            )
+            raise ValueError(f"Unavailable parameter(s): {in_valid_parameters}\nValid parameters are:\n  - {string}")
         # check that new parameters are correct
         _make_sbatch_string(command="nothing to do", folder=self.folder, **kwargs)
         super()._internal_update_parameters(**kwargs)
 
-    def _internal_process_submissions(
-        self, delayed_submissions: tp.List[utils.DelayedSubmission]
-    ) -> tp.List[core.Job[tp.Any]]:
+    def _internal_process_submissions(self, delayed_submissions: tp.List[utils.DelayedSubmission]) -> tp.List[core.Job[tp.Any]]:
         if len(delayed_submissions) == 1:
             return super()._internal_process_submissions(delayed_submissions)
         # array
@@ -331,18 +324,14 @@ class SlurmExecutor(core.PicklingExecutor):
 
         first_job: core.Job[tp.Any] = array_ex._submit_command(self._submitit_command_str)
         tasks_ids = list(range(first_job.num_tasks))
-        jobs: List[core.Job[tp.Any]] = [
-            SlurmJob(folder=self.folder, job_id=f"{first_job.job_id}_{a}", tasks=tasks_ids) for a in range(n)
-        ]
+        jobs: List[core.Job[tp.Any]] = [SlurmJob(folder=self.folder, job_id=f"{first_job.job_id}_{a}", tasks=tasks_ids) for a in range(n)]
         for job, pickle_path in zip(jobs, pickle_paths):
             job.paths.move_temporary_file(pickle_path, "submitted_pickle")
         return jobs
 
     @property
     def _submitit_command_str(self) -> str:
-        return " ".join(
-            [shlex.quote(sys.executable), "-u -m submitit.core._submit", shlex.quote(str(self.folder))]
-        )
+        return " ".join([shlex.quote(sys.executable), "-u -m submitit.core._submit", shlex.quote(str(self.folder))])
 
     def _make_submission_file_text(self, command: str, uid: str) -> str:
         return _make_sbatch_string(command=command, folder=self.folder, **self.parameters)
@@ -362,11 +351,9 @@ class SlurmExecutor(core.PicklingExecutor):
             string = string.decode()
         output = re.search(r"job (?P<id>[0-9]+)", string)
         if output is None:
-            raise utils.FailedSubmissionError(
-                'Could not make sense of sbatch output "{}"\n'.format(string)
-                + "Job instance will not be able to fetch status\n"
-                "(you may however set the job job_id manually if needed)"
-            )
+            raise utils.FailedSubmissionError('Could not make sense of sbatch output "{}"\n'.format(string) +
+                                              "Job instance will not be able to fetch status\n"
+                                              "(you may however set the job job_id manually if needed)")
         return output.group("id")
 
     @classmethod
@@ -378,7 +365,7 @@ class SlurmExecutor(core.PicklingExecutor):
 def _get_default_parameters() -> Dict[str, Any]:
     """Parameters that can be set through update_parameters"""
     specs = inspect.getfullargspec(_make_sbatch_string)
-    zipped = zip(specs.args[-len(specs.defaults) :], specs.defaults)  # type: ignore
+    zipped = zip(specs.args[-len(specs.defaults):], specs.defaults)  # type: ignore
     return {key: val for key, val in zipped if key not in {"command", "folder", "map_count"}}
 
 
@@ -464,9 +451,7 @@ def _make_sbatch_string(
     if comment:
         parameters["comment"] = utils.sanitize(comment, only_alphanum=False)
     if num_gpus is not None:
-        warnings.warn(
-            '"num_gpus" is deprecated, please use "gpus_per_node" instead (overwritting with num_gpus)'
-        )
+        warnings.warn('"num_gpus" is deprecated, please use "gpus_per_node" instead (overwritting with num_gpus)')
         parameters["gpus_per_node"] = parameters.pop("num_gpus", 0)
     if "cpus_per_gpu" in parameters and "gpus_per_task" not in parameters:
         warnings.warn('"cpus_per_gpu" requires to set "gpus_per_task" to work (and not "gpus_per_node")')
@@ -489,8 +474,7 @@ def _make_sbatch_string(
     # now create
     lines = ["#!/bin/bash", "", "# Parameters"]
     lines += [
-        "#SBATCH --{}{}".format(k.replace("_", "-"), "" if parameters[k] is True else f"={parameters[k]}")
-        for k in sorted(parameters)
+        "#SBATCH --{}{}".format(k.replace("_", "-"), "" if parameters[k] is True else f"={parameters[k]}") for k in sorted(parameters)
     ]
     # environment setup:
     if setup is not None:
