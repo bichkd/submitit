@@ -400,6 +400,7 @@ def _make_sbatch_string(
     map_count: tp.Optional[int] = None,  # used internally
     additional_parameters: tp.Optional[tp.Dict[str, tp.Any]] = None,
     srun_args: tp.Optional[tp.Iterable[str]] = None,
+    wait: tp.Optional[tp.Iterable[tp.Any]] = None,
 ) -> str:
     """Creates the content of an sbatch file with provided parameters
 
@@ -442,6 +443,7 @@ def _make_sbatch_string(
         "signal_delay_s",
         "stderr_to_stdout",
         "srun_args",
+        "wait",
     ]
     parameters = {k: v for k, v in locals().items() if v is not None and k not in nonslurm}
     # rename and reformat parameters
@@ -471,6 +473,18 @@ def _make_sbatch_string(
     if not stderr_to_stdout:
         parameters["error"] = stderr.replace("%t", "0")
     parameters["open-mode"] = "append"
+    # dependencies
+    if wait is not None:
+        afterok = set()
+        for k in wait:
+            if hasattr(k, 'job_id'):
+                job_id = str(k.job_id)
+            else:
+                job_id = str(k)
+            sjob_id = read_job_id(job_id)[0]
+            afterok.add(sjob_id[0])
+        assert len(afterok) > 0, "empty wait list"
+        parameters["dependency"] = "afterok:%s" % ':'.join(afterok)
     if additional_parameters is not None:
         parameters.update(additional_parameters)
     # now create
