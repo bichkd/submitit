@@ -19,6 +19,7 @@ import pytest
 from . import core, submission, utils
 
 
+# pylint: disable=no-self-use
 class MockedSubprocess:
     """Helper for mocking subprocess calls"""
 
@@ -59,7 +60,6 @@ class MockedSubprocess:
         self.set_job_state(job_id, "RUNNING", array)
         return f"Running job {job_id}\n"
 
-    # pylint: disable=no-self-use
     def scancel(self, _: Sequence[str]) -> str:
         # TODO:should we call set_job_state ?
         return ""
@@ -90,7 +90,6 @@ class MockedSubprocess:
                     with patch("subprocess.check_call", new=self):
                         yield None
 
-    # pylint: disable=no-self-use
     @contextlib.contextmanager
     def job_context(self, job_id: str) -> Iterator[None]:
         with utils.environment_variables(
@@ -109,6 +108,7 @@ class FakeInfoWatcher(core.InfoWatcher):
 class FakeJob(core.Job[core.R]):
 
     watcher = FakeInfoWatcher()
+    _cancel_at_deletion = False
 
 
 class FakeExecutor(core.PicklingExecutor):
@@ -199,8 +199,11 @@ def test_fake_executor_batch(tmp_path: Path) -> None:
     executor = FakeExecutor(folder=tmp_path)
     with executor.batch():
         job = executor.submit(_three_time, 8)
-    with executor.batch():  #  make sure we can send a new batch
+        assert isinstance(job, core.DelayedJob)
+    assert isinstance(job, FakeJob)
+    with executor.batch():  # make sure we can send a new batch
         job = executor.submit(_three_time, 8)
+        assert isinstance(job, core.DelayedJob)
     assert isinstance(job, FakeJob)
     # bad update
     with pytest.raises(RuntimeError):
@@ -210,7 +213,17 @@ def test_fake_executor_batch(tmp_path: Path) -> None:
     with pytest.raises(AttributeError):
         with executor.batch():
             job = executor.submit(_three_time, 8)
+            assert isinstance(job, core.DelayedJob)
             job.job_id  # pylint: disable=pointless-statement
+        assert isinstance(job, core.DelayedJob)
+
+    with executor.batch(allow_implicit_submissions=True):
+        job = executor.submit(_three_time, 8)
+        assert isinstance(job, core.DelayedJob)
+        job.job_id  # pylint: disable=pointless-statement
+        assert isinstance(job, FakeJob)
+        assert not executor._delayed_batch
+
     # empty context
     with pytest.warns(RuntimeWarning):
         with executor.batch():
@@ -220,6 +233,8 @@ def test_fake_executor_batch(tmp_path: Path) -> None:
         with executor.batch():
             with executor.batch():
                 job = executor.submit(_three_time, 8)
+                assert isinstance(job, core.DelayedJob)
+            assert isinstance(job, FakeJob)
 
 
 def test_unpickling_watcher_registration(tmp_path: Path) -> None:

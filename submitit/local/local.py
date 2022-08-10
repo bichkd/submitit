@@ -52,7 +52,7 @@ class LocalJob(core.Job[R]):
         except Exception:
             return "UNKNOWN"
 
-    def get_info(self) -> Dict[str, str]:
+    def get_info(self, mode: str = "force") -> Dict[str, str]:  # pylint: disable=unused-argument
         """Returns information about the job as a dict."""
         assert self._process is not None
         poll = self._process.poll()
@@ -71,7 +71,7 @@ class LocalJob(core.Job[R]):
     def _interrupt(self) -> None:
         """Sends preemption / timeout signal to the job (for testing purpose)"""
         assert self._process is not None
-        self._process.send_signal(signal.SIGUSR1)
+        self._process.send_signal(LocalJobEnvironment._usr_sig())
 
     def __del__(self) -> None:
         if self._cancel_at_deletion:
@@ -135,7 +135,7 @@ class LocalExecutor(core.PicklingExecutor):
         - visible_gpus (Sequence[int])
         - tasks_per_node (int)
         - nodes (int). Must be 1 if specified
-        - signal_delay_s (int): USR1 signal delay before timeout
+        - signal_delay_s (int): signal (lately: USR2) delay before timeout
 
         Other parameters are ignored
         """
@@ -249,7 +249,7 @@ class Controller:
         self.stderrs: List[IO[Any]] = []
         self.pid = str(os.getpid())
         self.folder = Path(folder)
-        signal.signal(signal.SIGTERM, self._forward_signal)
+        signal.signal(signal.SIGTERM, self._forward_signal)  # type: ignore
 
     def _forward_signal(self, signum: signal.Signals, *args: Any) -> None:  # pylint:disable=unused-argument
         for task in self.tasks:
@@ -314,7 +314,7 @@ class Controller:
                 return exit_codes
 
             if step == almost_timeout:
-                self._forward_signal(signal.SIGUSR1)
+                self._forward_signal(LocalJobEnvironment._usr_sig())
 
             time.sleep(1.0 / freq)
         return [t.poll() for t in self.tasks]

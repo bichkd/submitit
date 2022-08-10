@@ -16,6 +16,8 @@ from typing import Any, ClassVar, Dict, Optional, Sequence
 from . import logger, utils
 from .utils import DelayedSubmission, JobPaths
 
+_PREEMPT_SIG_ENV = "SUBMITIT_PREEMPT_SIGNAL"
+
 
 class JobEnvironment:
     """Describe the environment inside which the job is running.
@@ -27,6 +29,10 @@ class JobEnvironment:
     Override _env to map environment variable to each property.
     """
 
+    # preemption signal uses USR2 as default, but this behavior
+    # can be overiden (eg: export SUBMITIT_PREEMPT_SIGNAL=USR2)
+    # CAUTION: NCCL may catch USR1 so it should be avoided
+    USR_SIG = os.environ.get(_PREEMPT_SIG_ENV, "USR2")
     _env: ClassVar[Dict[str, str]] = {}
 
     def __new__(cls, *args: Any) -> "JobEnvironment":
@@ -124,7 +130,18 @@ class JobEnvironment:
         names = ("local_rank", "node", "global_rank")
         totals = [self.num_tasks // self.num_nodes, self.num_nodes, self.num_tasks]
         info += [f"{n}={getattr(self, n)}({t})" for n, t in zip(names, totals)]
-        return "JobEnvironment({})".format(", ".join(info))
+        info_str = ", ".join(info)
+        return f"JobEnvironment({info_str})"
+
+    @classmethod
+    def _usr_sig(cls) -> Any:
+        name = "SIG" + cls.USR_SIG
+        out = getattr(signal, name, None)
+        if out is None:
+            raise RuntimeError(
+                f"Unknown signal {name}, you may need to unset or update env var {_PREEMPT_SIG_ENV} (Eg: USR2)"
+            )
+        return out
 
     def _handle_signals(self, paths: JobPaths, submission: DelayedSubmission) -> None:
         """Set up signals handler for the current executable.
@@ -133,20 +150,19 @@ class JobEnvironment:
         @plugin-dev: Should be adapted to the signals used in this cluster.
         """
         handler = SignalHandler(self, paths, submission)
-        signal.signal(signal.SIGUSR1, handler.checkpoint_and_try_requeue)
+        signal.signal(self._usr_sig(), handler.checkpoint_and_try_requeue)
         # A priori we don't need other signals anymore,
         # but still log them to make it easier to debug.
         signal.signal(signal.SIGTERM, handler.bypass)
         signal.signal(signal.SIGCONT, handler.bypass)
 
-    # pylint: disable=no-self-use,unused-argument
+    # pylint: disable=unused-argument
     def _requeue(self, countdown: int) -> None:
         """Requeue the current job.
 
         @plugin-dev:Must be overridden by JobEnvironment implementations.
             Use self.job_id to find what need to be requeued.
         """
-        ...
 
 
 class SignalHandler:

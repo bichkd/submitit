@@ -18,6 +18,8 @@ from typing_extensions import TypedDict
 
 from . import logger, utils
 
+# R as in "Result", so yes it's covariant.
+# pylint: disable=typevar-name-incorrect-variance
 R = tp.TypeVar("R", covariant=True)
 
 
@@ -126,9 +128,12 @@ class InfoWatcher:
             return
         self._num_calls += 1
         try:
+            logger.get_logger().debug(f"Call #{self.num_calls} - Command {' '.join(command)}")
             self._output = subprocess.check_output(command, shell=False)
         except Exception as e:
-            logger.get_logger().warning(f"Call #{self.num_calls} - Bypassing sacct error {e}, status may be inaccurate.")
+            logger.get_logger().warning(
+                f"Call #{self.num_calls} - Bypassing sacct error {e}, status may be inaccurate."
+            )
         else:
             self._info_dict.update(self.read_info(self._output))
         self._last_status_check = _time.time()
@@ -165,14 +170,14 @@ class Job(tp.Generic[R]):
     _results_timeout_s = 15
     watcher = InfoWatcher()
 
-    def __init__(self, folder: tp.Union[Path, str], job_id: str, tasks: tp.Sequence[int] = (0, )) -> None:
+    def __init__(self, folder: tp.Union[Path, str], job_id: str, tasks: tp.Sequence[int] = (0,)) -> None:
         self._job_id = job_id
         self._tasks = tuple(tasks)
         self._sub_jobs: tp.Sequence["Job[R]"] = []
         self._cancel_at_deletion = False
         if len(tasks) > 1:
             # This is a meta-Job
-            self._sub_jobs = [self.__class__(folder=folder, job_id=job_id, tasks=(k, )) for k in self._tasks]
+            self._sub_jobs = [self.__class__(folder=folder, job_id=job_id, tasks=(k,)) for k in self._tasks]
         self._paths = utils.JobPaths(folder, job_id=job_id, task_id=self.task_id)
         self._start_time = _time.time()
         self._last_status_check = self._start_time  # for the "done()" method
@@ -200,7 +205,9 @@ class Job(tp.Generic[R]):
 
     def submission(self) -> utils.DelayedSubmission:
         """Returns the submitted object, with attributes `function`, `args` and `kwargs`"""
-        assert (self.paths.submitted_pickle.exists()), f"Cannot find job submission pickle: {self.paths.submitted_pickle}"
+        assert (
+            self.paths.submitted_pickle.exists()
+        ), f"Cannot find job submission pickle: {self.paths.submitted_pickle}"
         return utils.DelayedSubmission.load(self.paths.submitted_pickle)
 
     def cancel_at_deletion(self, value: bool = True) -> "Job[R]":
@@ -251,7 +258,9 @@ class Job(tp.Generic[R]):
         check: bool
             whether to wait for completion and check that the command worked
         """
-        (subprocess.check_call if check else subprocess.call)([self._cancel_command, f"{self.job_id}"], shell=False)
+        (subprocess.check_call if check else subprocess.call)(
+            [self._cancel_command, f"{self.job_id}"], shell=False
+        )
 
     def result(self) -> R:
         r = self.results()
@@ -318,11 +327,13 @@ class Job(tp.Generic[R]):
         except utils.UncompletedJobError as e:
             return e
         if outcome == "error":
-            return utils.FailedJobError(f"Job (task={self.task_id}) failed during processing with trace:\n"
-                                        f"----------------------\n{trace}\n"
-                                        "----------------------\n"
-                                        f"You can check full logs with 'job.stderr({self.task_id})' and 'job.stdout({self.task_id})'"
-                                        f"or at paths:\n  - {self.paths.stderr}\n  - {self.paths.stdout}")
+            return utils.FailedJobError(
+                f"Job (task={self.task_id}) failed during processing with trace:\n"
+                f"----------------------\n{trace}\n"
+                "----------------------\n"
+                f"You can check full logs with 'job.stderr({self.task_id})' and 'job.stdout({self.task_id})'"
+                f"or at paths:\n  - {self.paths.stderr}\n  - {self.paths.stdout}"
+            )
         return None
 
     def _get_outcome_and_result(self) -> tp.Tuple[str, tp.Any]:
@@ -365,7 +376,9 @@ class Job(tp.Generic[R]):
                 message.extend(["Error stream produced:", "-" * 40, log])
             elif self.paths.stdout.exists():
                 log = subprocess.check_output(["tail", "-40", str(self.paths.stdout)], encoding="utf-8")
-                message.extend([f"No error stream produced. Look at stdout: {self.paths.stdout}", "-" * 40, log])
+                message.extend(
+                    [f"No error stream produced. Look at stdout: {self.paths.stdout}", "-" * 40, log]
+                )
             else:
                 message.append(f"No output/error stream produced ! Check: {self.paths.stdout}")
             raise utils.UncompletedJobError("\n".join(message))
@@ -430,12 +443,12 @@ class Job(tp.Generic[R]):
 
     @property
     def state(self) -> str:
-        """State of the job (forces an update)"""
-        return self.watcher.get_state(self.job_id, mode="force")
+        """State of the job (does not force an update)"""
+        return self.watcher.get_state(self.job_id, mode="standard")
 
-    def get_info(self) -> tp.Dict[str, str]:
+    def get_info(self, mode: str = "force") -> tp.Dict[str, str]:
         """Returns informations about the job as a dict (sacct call)"""
-        return self.watcher.get_info(self.job_id, mode="force")
+        return self.watcher.get_info(self.job_id, mode=mode)
 
     def _get_logs_string(self, name: str) -> tp.Optional[str]:
         """Returns a string with the content of the log file
@@ -495,8 +508,7 @@ class Job(tp.Generic[R]):
         return f'{self.__class__.__name__}<job_id={self.job_id}, task_id={self.task_id}, state="{state}">'
 
     def __del__(self) -> None:
-        # somehow this is called before the job is constructed
-        if hasattr(self, '_cancel_at_deletion') and self._cancel_at_deletion:
+        if self._cancel_at_deletion:
             if not self.watcher.is_done(self.job_id, mode="cache"):
                 self.cancel(check=False)
 
@@ -509,8 +521,52 @@ class Job(tp.Generic[R]):
         self._register_in_watcher()
 
 
-class AsyncJobProxy(tp.Generic[R]):
+class DelayedJob(Job[R]):
+    """
+    Represents a Job that have been queue for submission by an executor,
+    but hasn't yet been scheduled.
+    Typically obtained by calling `ex.submit` within a `ex.batch()` context
 
+    Trying to read the attributes of the job will, by default, fail.
+    But if you passed `ex.batch(allow_implicit_submission=True)` then
+    the attribute read will in fact force the job submission,
+    and you'll obtain a real job instead.
+    """
+
+    def __init__(self, ex: "Executor"):
+        # pylint: disable = super-init-not-called
+        self._submitit_executor = ex
+
+    def __getattr__(self, name: str) -> tp.Any:
+        # _cancel_at_deletion is used in __del__, we don't want it to trigger submission
+        if name == "_cancel_at_deletion":
+            return False
+
+        ex = self.__dict__["_submitit_executor"]
+        # this submits the batch so as to fill the instance attributes
+        # this may return false if we try to submit within executor.batch()
+        # without passing `executor.batch(allow_implicit_submission=True)`
+        if not ex._allow_implicit_submissions:
+            raise AttributeError(
+                "Accesssing job attributes is forbidden within 'with executor.batch()' context"
+            )
+        ex._submit_delayed_batch()
+        # Ensure that _promote did get called, otherwise getattr will trigger a stack overflow
+        assert self.__class__ != DelayedJob, f"Executor {ex} didn't properly submitted {self} !"
+        return getattr(self, name)
+
+    def _promote(self, new_job: Job[tp.Any]) -> None:
+        # fill in the empty shell, the pickle way
+        self.__dict__.pop("_submitit_executor", None)
+        self.__dict__.update(new_job.__dict__)
+        # pylint: disable=attribute-defined-outside-init
+        self.__class__ = new_job.__class__  # type: ignore
+
+    def __repr__(self) -> str:
+        return object.__repr__(self)
+
+
+class AsyncJobProxy(tp.Generic[R]):
     def __init__(self, job: Job[R]):
         self.job = job
 
@@ -544,7 +600,7 @@ class AsyncJobProxy(tp.Generic[R]):
         # results are ready now
         return self.job.results()
 
-    def results_as_compteled(self, poll_interval: tp.Union[int, float] = 1) -> tp.Iterator[asyncio.Future]:
+    def results_as_completed(self, poll_interval: tp.Union[int, float] = 1) -> tp.Iterator[asyncio.Future]:
         """awaits for all tasks results concurrently. Note that the order of results is not guaranteed to match the order
         of the tasks anymore as the earliest task coming back might not be the first one you sent.
 
@@ -560,14 +616,18 @@ class AsyncJobProxy(tp.Generic[R]):
         (see https://docs.python.org/3/library/asyncio-task.html#asyncio.as_completed)
         """
         if self.job.num_tasks > 1:
-            yield from asyncio.as_completed([self.job.task(i).awaitable().result(poll_interval) for i in range(self.job.num_tasks)])
+            yield from asyncio.as_completed(
+                [self.job.task(i).awaitable().result(poll_interval) for i in range(self.job.num_tasks)]
+            )
 
         # there is only one result anyway, let's just use async result
         yield asyncio.ensure_future(self.result())
 
 
-_MSG = ("Interactions with jobs are not allowed within "
-        '"with executor.batch()" context (submissions/creations only happens at exit time).')
+_MSG = (
+    "Interactions with jobs are not allowed within "
+    '"with executor.batch()" context (submissions/creations only happens at exit time).'
+)
 
 
 class EquivalenceDict(TypedDict):
@@ -603,6 +663,7 @@ class Executor(abc.ABC):
         self.parameters = {} if parameters is None else parameters
         # storage for the batch context manager, for batch submissions:
         self._delayed_batch: tp.Optional[tp.List[tp.Tuple[Job[tp.Any], utils.DelayedSubmission]]] = None
+        self._allow_implicit_submissions = False
 
     @classmethod
     def name(cls) -> str:
@@ -612,34 +673,62 @@ class Executor(abc.ABC):
         return n.lower()
 
     @contextlib.contextmanager
-    def batch(self) -> tp.Iterator[None]:
+    def batch(self, allow_implicit_submissions: bool = False) -> tp.Iterator[None]:
+        """Creates a context within which all submissions are packed into a job array.
+        By default the array submissions happens when leaving the context
+
+        Parameter
+        ---------
+        allow_implicit_submissions: bool
+            submits the current batch whenever a job attribute is accessed instead of raising an exception
+
+        Example
+        -------
+        jobs = []
+        with executor.batch():
+            for k in range(12):
+                jobs.append(executor.submit(add, k, 1))
+
+        Raises
+        ------
+        AttributeError
+            if trying to access a job instance attribute while the batch is not exited, and
+            intermediate submissions are not allowed.
+        """
+        self._allow_implicit_submissions = allow_implicit_submissions
         if self._delayed_batch is not None:
             raise RuntimeError('Nesting "with executor.batch()" contexts is not allowed.')
         self._delayed_batch = []
         try:
             yield None
         except Exception as e:
-            logger.get_logger().error('Caught error within "with executor.batch()" context, submissions are dropped.\n ')
-            if isinstance(e, AttributeError):
-                logger.get_logger().error('Note that accesssing jobs attributes is forbidden within "with executor.batch()" context')
+            logger.get_logger().error(
+                'Caught error within "with executor.batch()" context, submissions are dropped.\n '
+            )
             raise e
+        else:
+            self._submit_delayed_batch()
         finally:
-            delayed_batch = self._delayed_batch
             self._delayed_batch = None
-        if not delayed_batch:
-            warnings.warn('No submission happened during "with executor.batch()" context.', category=RuntimeWarning)
+
+    def _submit_delayed_batch(self) -> None:
+        assert self._delayed_batch is not None
+        if not self._delayed_batch:
+            if not self._allow_implicit_submissions:
+                warnings.warn(
+                    'No submission happened during "with executor.batch()" context.', category=RuntimeWarning
+                )
             return
-        jobs, submissions = zip(*delayed_batch)
+        jobs, submissions = zip(*self._delayed_batch)
         new_jobs = self._internal_process_submissions(submissions)
         for j, new_j in zip(jobs, new_jobs):
-            j.__dict__.update(new_j.__dict__)  # fill in the empty shell, the pickle way
+            j._promote(new_j)
+        self._delayed_batch = []
 
     def submit(self, fn: tp.Callable[..., R], *args: tp.Any, **kwargs: tp.Any) -> Job[R]:
         ds = utils.DelayedSubmission(fn, *args, **kwargs)
         if self._delayed_batch is not None:
-            # ugly hack for AutoExecutor class which is known at runtime
-            cls = self.job_class if self.job_class is not Job else self._executor.job_class  # type: ignore
-            job: Job[R] = cls.__new__(cls)  # empty shell
+            job: Job[R] = DelayedJob(self)
             self._delayed_batch.append((job, ds))
         else:
             job = self._internal_process_submissions([ds])[0]
@@ -648,7 +737,9 @@ class Executor(abc.ABC):
         return job
 
     @abc.abstractmethod
-    def _internal_process_submissions(self, delayed_submissions: tp.List[utils.DelayedSubmission]) -> tp.List[Job[tp.Any]]:
+    def _internal_process_submissions(
+        self, delayed_submissions: tp.List[utils.DelayedSubmission]
+    ) -> tp.List[Job[tp.Any]]:
         ...
 
     def map_array(self, fn: tp.Callable[..., R], *iterable: tp.Iterable[tp.Any]) -> tp.List[Job[R]]:
@@ -670,7 +761,7 @@ class Executor(abc.ABC):
         -------
         a = [1, 2, 3]
         b = [10, 20, 30]
-        executor.submit(add, a, b)
+        executor.map_array(add, a, b)
         # jobs will compute 1 + 10, 2 + 20, 3 + 30
         """
         submissions = [utils.DelayedSubmission(fn, *args) for args in zip(*iterable)]
@@ -713,7 +804,9 @@ class Executor(abc.ABC):
     def update_parameters(self, **kwargs: tp.Any) -> None:
         """Update submision parameters."""
         if self._delayed_batch is not None:
-            raise RuntimeError('Changing parameters within batch context "with executor.batch():" is not allowed')
+            raise RuntimeError(
+                'Changing parameters within batch context "with executor.batch():" is not allowed'
+            )
         self._internal_update_parameters(**kwargs)
 
     @classmethod
@@ -767,7 +860,9 @@ class PicklingExecutor(Executor):
         self._throttling = 0.2
         self._last_job_submitted = 0.0
 
-    def _internal_process_submissions(self, delayed_submissions: tp.List[utils.DelayedSubmission]) -> tp.List[Job[tp.Any]]:
+    def _internal_process_submissions(
+        self, delayed_submissions: tp.List[utils.DelayedSubmission]
+    ) -> tp.List[Job[tp.Any]]:
         """Submits a task to the cluster.
 
         Parameters
@@ -829,7 +924,9 @@ class PicklingExecutor(Executor):
             Since it has no output, some methods will not be efficient
         """
         tmp_uuid = uuid.uuid4().hex
-        submission_file_path = (utils.JobPaths.get_first_id_independent_folder(self.folder) / f"submission_file_{tmp_uuid}.sh")
+        submission_file_path = (
+            utils.JobPaths.get_first_id_independent_folder(self.folder) / f"submission_file_{tmp_uuid}.sh"
+        )
         with submission_file_path.open("w") as f:
             f.write(self._make_submission_file_text(command, tmp_uuid))
         command_list = self._make_submission_command(submission_file_path)

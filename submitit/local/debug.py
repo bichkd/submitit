@@ -40,7 +40,6 @@ class DebugJobEnvironment(JobEnvironment):
 
 
 # pylint in python 3.6 is confused by generics.
-# pylint: disable=no-self-use
 class DebugJob(Job[R]):
     watcher = DebugInfoWatcher()
 
@@ -77,6 +76,7 @@ class DebugJob(Job[R]):
         os.environ.update(self.environ)
 
         root_logger = logging.getLogger("")
+        self.paths.stdout.parent.mkdir(exist_ok=True, parents=True)
         stdout_handler = logging.FileHandler(self.paths.stdout)
         stdout_handler.setLevel(logging.DEBUG)
         stderr_handler = logging.FileHandler(self.paths.stderr)
@@ -135,8 +135,12 @@ class DebugJob(Job[R]):
             return "CANCELLED"
         return "QUEUED"
 
-    def get_info(self) -> Dict[str, str]:
+    def get_info(self, mode: str = "force") -> Dict[str, str]:  # pylint: disable=unused-argument
         return {"STATE": self.state}
+
+    def __del__(self) -> None:
+        # Skip parent code
+        return
 
 
 class DebugExecutor(Executor):

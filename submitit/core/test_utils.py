@@ -66,14 +66,6 @@ def test_slurmpaths_id_independent() -> None:
     assert output.name == "truc"
 
 
-def test_sanitize() -> None:
-    assert utils.sanitize("AlreadySanitized") == "AlreadySanitized"
-    assert utils.sanitize("Name with space") == "Name_with_space"
-    assert utils.sanitize("Name with space", only_alphanum=False) == '"Name with space"'
-    assert utils.sanitize("Name with    many    spaces") == "Name_with_many_spaces"
-    assert utils.sanitize(" Non alph@^ Nüm%") == "_Non_alph_Nüm_"
-
-
 def test_archive_dev_folders(tmp_path: Path) -> None:
     utils.archive_dev_folders([Path(__file__).parent], outfile=tmp_path.with_suffix(".tar.gz"))
     shutil.unpack_archive(str(tmp_path.with_suffix(".tar.gz")), extract_dir=tmp_path)
@@ -109,3 +101,12 @@ print("printed {n} lines to stderr")
     fn2 = utils.CommandFunction(["python", "-c", code.format(n=1000)])
     j2 = executor.submit(fn2)
     assert "1000 lines" in j2.result()
+
+
+def test_jobpaths(tmp_path: Path) -> None:
+    assert utils.JobPaths(tmp_path, "123").stdout == tmp_path / "123_0_log.out"
+    assert utils.JobPaths(tmp_path, "123", 1).stdout == tmp_path / "123_1_log.out"
+    assert (
+        utils.JobPaths(tmp_path / "array-%A-index-%a", "456_3").stdout
+        == tmp_path / "array-456-index-3" / "456_3_0_log.out"
+    )

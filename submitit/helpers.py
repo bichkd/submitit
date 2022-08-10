@@ -4,8 +4,12 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+import collections
+import contextlib
+import datetime
 import itertools
 import os
+import random
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +20,7 @@ from pathlib import Path
 # pylint: disable=unused-import
 # import DelayedSubmission and CommandFunction to populate helpers namespace
 from .core import core
+from .core.job_environment import JobEnvironment
 from .core.utils import CommandFunction as CommandFunction  # noqa
 from .core.utils import DelayedSubmission as DelayedSubmission  # noqa
 from .core.utils import environment_variables as environment_variables  # noqa
@@ -216,3 +221,178 @@ class RsyncSnapshot:
 
     def __exit__(self, *args):
         os.chdir(self.original_dir)
+
+
+def _default_custom_logging(monitoring_start_time: float, n_jobs: int, state_jobs: tp.Dict[str, tp.Set[int]]):
+    run_time = time.time() - monitoring_start_time
+    date_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    failed_job_indices = sorted(state_jobs["FAILED"])
+    n_chars = len(str(n_jobs))
+
+    print(
+        f"[{date_time}] Launched {int(run_time / 60)} minutes ago,",
+        f"{len(state_jobs['RUNNING']):{n_chars}}/{n_jobs} jobs running,",
+        f"{len(failed_job_indices):{n_chars}}/{n_jobs} jobs failed,",
+        f"{len(state_jobs['DONE']) - len(failed_job_indices):{n_chars}}/{n_jobs} jobs done",
+        flush=True,
+    )
+
+    if len(failed_job_indices) > 0:
+        print(f"[{date_time}] Failed jobs, indices {failed_job_indices}", flush=True)
+
+
+def monitor_jobs(
+    jobs: tp.Sequence[core.Job[core.R]],
+    poll_frequency: float = 30,
+    test_mode: bool = False,
+    custom_logging: tp.Callable = _default_custom_logging,
+) -> None:
+    """Continuously monitors given jobs until they are all done or failed.
+
+    Parameters
+    ----------
+    jobs: List[Jobs]
+        A list of jobs to monitor
+    poll_frequency: int
+        The time (in seconds) between two refreshes of the monitoring.
+        Can't be inferior to 30s.
+    test_mode: bool
+        If in test mode, we do not check the length of poll_frequency
+    """
+
+    if not test_mode:
+        assert poll_frequency >= 30, "You can't refresh too often (>= 30s) to avoid overloading squeue"
+
+    n_jobs = len(jobs)
+    if n_jobs == 0:
+        print("There are no jobs to monitor")
+        return
+
+    job_arrays = ", ".join(sorted(set(str(job.job_id).split("_", 1)[0] for job in jobs)))
+    print(f"Monitoring {n_jobs} jobs from job arrays {job_arrays} \n")
+
+    monitoring_start_time = time.time()
+    while True:
+        if not test_mode:
+            jobs[0].get_info(mode="force")  # Force update once to sync the state
+        state_jobs = collections.defaultdict(set)
+        for i, job in enumerate(jobs):
+            state_jobs[job.state.upper()].add(i)
+            if job.done():
+                state_jobs["DONE"].add(i)
+
+        failed_job_indices = sorted(state_jobs["FAILED"])
+        if len(state_jobs["DONE"]) == len(jobs):
+            print(f"All jobs finished, jobs with indices {failed_job_indices} failed", flush=True)
+            break
+
+        custom_logging(monitoring_start_time, n_jobs, state_jobs)
+        time.sleep(poll_frequency)
+
+    print(f"Whole process is finished, took {int((time.time() - monitoring_start_time) / 60)} minutes")
+
+
+@contextlib.contextmanager
+def clean_env() -> tp.Iterator[None]:
+    """Removes slurm and submitit related environment variables so as to avoid interferences
+    when submiting a new job from a job.
+
+    Note
+    ----
+    A slurm job submitted from within a slurm job inherits some of its attributes, which may
+    be confusing a cause weird gres errors (or pytorch distributed).
+    Submitting within this context should prevent this.
+
+    Usage
+    -----
+    with submitit.helpers.clean_env():
+        executor.submit(...)
+    """
+    distrib_names = ("MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE")
+    cluster_env = {
+        x: os.environ.pop(x)
+        for x in os.environ
+        if x.startswith(("SLURM_", "SUBMITIT_")) or x in distrib_names
+    }
+    try:
+        yield
+    finally:
+        os.environ.update(cluster_env)
+
+
+class TorchDistributedEnvironment:
+    def __init__(self) -> None:
+        """Construct a class holding the parameters required to properly setup
+        PyTorch distributed (with the default env:// initialization method).
+
+        Examples
+        --------
+        >>> dist_env = TorchDistributedEnvironment().export()
+        >>> torch.distributed.init_process_group(backend="nccl")
+        >>> print(f"master: {dist_env.master_addr}:{dist_env.master_port}")
+        """
+        self._job_env = JobEnvironment()
+        self.master_addr = self._job_env.hostnames[0]
+        self.master_port = self._get_master_port()
+        self.rank = self._job_env.global_rank
+        self.world_size = self._job_env.num_tasks
+        self.local_rank = self._job_env.local_rank
+        self.local_world_size = self._job_env.num_tasks // self._job_env.num_nodes
+
+    def _get_master_port(self) -> int:
+        # MIN_MASTER_PORT, MAX_MASTER_PORT = (1023, 65535)
+        MIN_MASTER_PORT, MAX_MASTER_PORT = (20000, 60000)
+
+        master_port_str = os.environ.get("MASTER_PORT")
+        if master_port_str is None:
+            rng = random.Random(self._job_env.job_id)
+            return rng.randint(MIN_MASTER_PORT, MAX_MASTER_PORT)
+
+        master_port = int(master_port_str)
+        # assert MIN_MASTER_PORT <= master_port <= MIN_MASTER_PORT
+        return master_port
+
+    def export(
+        self,
+        set_cuda_visible_devices: bool = True,
+        overwrite: bool = False,
+    ) -> "TorchDistributedEnvironment":
+        """Export all the environment variables required to properly setup
+        PyTorch distributed (with the default env:// initialization method) i.e.
+        MASTER_ADDR, MASTER_PORT, RANK, WORLD_SIZE (to which LOCAL_RANK and
+        LOCAL_WORLD_SIZE are added).
+
+        Parameter
+        ----------
+        set_cuda_visible_device: bool
+            if True, updates CUDA_VISIBLE_DEVICES to use only the device
+            matching the local rank.
+        overwrite: bool
+            if True, overwrites the environment variables if they exist;
+            this can be useful when launching a job from another job.
+
+        Returns
+        --------
+        TorchDistributedEnvironment
+            the current instance
+        """
+        # See the "Environment variable initialization" section from
+        # https://pytorch.org/docs/stable/distributed.html for the complete list of
+        # environment variables required for the env:// initialization method.
+        env_vars = {
+            "MASTER_ADDR": self.master_addr,
+            "MASTER_PORT": str(self.master_port),
+            "RANK": str(self.rank),
+            "WORLD_SIZE": str(self.world_size),
+            "LOCAL_RANK": str(self.local_rank),  # Not required
+            "LOCAL_WORLD_SIZE": str(self.local_world_size),  # Not required
+        }
+        if not overwrite:
+            for key in env_vars:
+                if key in os.environ:
+                    raise RuntimeError(f"Cannot export environment variables as {key} is already set")
+        # Note: CUDA_VISIBLE_DEVICES may already be set with all available GPUs
+        if set_cuda_visible_devices:
+            env_vars["CUDA_VISIBLE_DEVICES"] = str(self.local_rank)
+        os.environ.update(env_vars)
+        return self

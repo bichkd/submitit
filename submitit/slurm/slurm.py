@@ -114,7 +114,7 @@ class SlurmJob(core.Job[core.R]):
         # in case of preemption, SIGTERM is sent first
         if not timeout:
             subprocess.check_call(cmd + ["SIGTERM"])
-        subprocess.check_call(cmd + ["USR1"])
+        subprocess.check_call(cmd + [SlurmJobEnvironment.USR_SIG])
 
 
 class SlurmParseException(Exception):
@@ -338,7 +338,7 @@ class SlurmExecutor(core.PicklingExecutor):
 
     def _num_tasks(self) -> int:
         nodes: int = self.parameters.get("nodes", 1)
-        tasks_per_node: int = self.parameters.get("ntasks_per_node", 1)
+        tasks_per_node: int = max(1, self.parameters.get("ntasks_per_node", 1))
         return nodes * tasks_per_node
 
     def _make_submission_command(self, submission_file_path: Path) -> List[str]:
@@ -351,7 +351,7 @@ class SlurmExecutor(core.PicklingExecutor):
             string = string.decode()
         output = re.search(r"job (?P<id>[0-9]+)", string)
         if output is None:
-            raise utils.FailedSubmissionError('Could not make sense of sbatch output "{}"\n'.format(string) +
+            raise utils.FailedSubmissionError(f'Could not make sense of sbatch output "{string}"\n'
                                               "Job instance will not be able to fetch status\n"
                                               "(you may however set the job job_id manually if needed)")
         return output.group("id")
@@ -392,6 +392,7 @@ def _make_sbatch_string(
     comment: tp.Optional[str] = None,
     constraint: tp.Optional[str] = None,
     exclude: tp.Optional[str] = None,
+    account: tp.Optional[str] = None,
     gres: tp.Optional[str] = None,
     exclusive: tp.Optional[tp.Union[bool, str]] = None,
     array_parallelism: int = 256,
@@ -447,11 +448,7 @@ def _make_sbatch_string(
     ]
     parameters = {k: v for k, v in locals().items() if v is not None and k not in nonslurm}
     # rename and reformat parameters
-    parameters["signal"] = f"USR1@{signal_delay_s}"
-    if job_name:
-        parameters["job_name"] = utils.sanitize(job_name)
-    if comment:
-        parameters["comment"] = utils.sanitize(comment, only_alphanum=False)
+    parameters["signal"] = f"{SlurmJobEnvironment.USR_SIG}@{signal_delay_s}"
     if num_gpus is not None:
         warnings.warn('"num_gpus" is deprecated, please use "gpus_per_node" instead (overwritting with num_gpus)')
         parameters["gpus_per_node"] = parameters.pop("num_gpus", 0)
@@ -459,8 +456,8 @@ def _make_sbatch_string(
         warnings.warn('"cpus_per_gpu" requires to set "gpus_per_task" to work (and not "gpus_per_node")')
     # add necessary parameters
     paths = utils.JobPaths(folder=folder)
-    stdout = shlex.quote(str(paths.stdout))
-    stderr = shlex.quote(str(paths.stderr))
+    stdout = str(paths.stdout)
+    stderr = str(paths.stderr)
     # Job arrays will write files in the form  <ARRAY_ID>_<ARRAY_TASK_ID>_<TASK_ID>
     if map_count is not None:
         assert isinstance(map_count, int) and map_count
@@ -487,26 +484,30 @@ def _make_sbatch_string(
         parameters["dependency"] = "afterok:%s" % ':'.join(afterok)
     if additional_parameters is not None:
         parameters.update(additional_parameters)
+
     # now create
     lines = ["#!/bin/bash", "", "# Parameters"]
-    lines += [
-        "#SBATCH --{}{}".format(k.replace("_", "-"), "" if parameters[k] is True else f"={parameters[k]}") for k in sorted(parameters)
-    ]
+
+    for k in sorted(parameters):
+        lines.append(_as_sbatch_flag(k, parameters[k]))
+
     # environment setup:
     if setup is not None:
         lines += ["", "# setup"] + setup
     # commandline (this will run the function and args specified in the file provided as argument)
     # We pass --output and --error here, because the SBATCH command doesn't work as expected with a filename pattern
-    stderr_flag = "" if stderr_to_stdout else f"--error {stderr}"
+    stderr_flags = [] if stderr_to_stdout else ["--error", stderr]
     if srun_args is None:
-        srun_command = "srun"
-    else:
-        srun_command = f"srun {' '.join(srun_args)}"
+        srun_args = []
+
+    srun_cmd = _shlex_join(["srun", "--unbuffered", "--output", stdout, *stderr_flags, *srun_args])
     lines += [
         "",
         "# command",
         "export SUBMITIT_EXECUTOR=slurm",
-        f"{srun_command} --output {stdout} {stderr_flag} --unbuffered {command}\n",
+        # The input "command" is supposed to be a valid shell command
+        " ".join((srun_cmd, command)),
+        "",
     ]
     return "\n".join(lines)
 
@@ -515,3 +516,17 @@ def _convert_mem(mem_gb: float) -> str:
     if mem_gb == int(mem_gb):
         return f"{int(mem_gb)}GB"
     return f"{int(mem_gb * 1024)}MB"
+
+
+def _as_sbatch_flag(key: str, value: tp.Any) -> str:
+    key = key.replace("_", "-")
+    if value is True:
+        return f"#SBATCH --{key}"
+
+    value = shlex.quote(str(value))
+    return f"#SBATCH --{key}={value}"
+
+
+def _shlex_join(split_command: tp.List[str]) -> str:
+    """Same as shlex.join, but that was only added in Python 3.8"""
+    return " ".join(shlex.quote(arg) for arg in split_command)
