@@ -47,9 +47,7 @@ class FailedSubmissionError(RuntimeError):
 class JobPaths:
     """Creates paths related to the slurm job and its submission"""
 
-    def __init__(
-        self, folder: tp.Union[Path, str], job_id: tp.Optional[str] = None, task_id: tp.Optional[int] = None
-    ) -> None:
+    def __init__(self, folder: tp.Union[Path, str], job_id: tp.Optional[str] = None, task_id: tp.Optional[int] = None) -> None:
         self._folder = Path(folder).expanduser().absolute()
         self.job_id = job_id
         self.task_id = task_id or 0
@@ -67,7 +65,16 @@ class JobPaths:
 
     @property
     def submitted_pickle(self) -> Path:
-        return self._format_id(self.folder / "%j_submitted.pkl")
+        assert '_' in self.job_id, 'hack only works for array jobs'
+
+        subs = [p for p in self.folder.iterdir() if p.name.endswith('_0000.pkl')]
+        assert len(subs) == 1
+        submit_uuid = subs[0].stem.split('_')[0]
+
+        jid, aid = self.job_id.split('_')
+        aid = int(aid)
+
+        return Path(self.folder, '%s_%04d.pkl' % (submit_uuid, aid))
 
     @property
     def result_pickle(self) -> Path:
@@ -95,7 +102,7 @@ class JobPaths:
 
     def move_temporary_file(self, tmp_path: tp.Union[Path, str], name: str) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
-        Path(tmp_path).rename(getattr(self, name))
+        Path(getattr(self, name)).symlink_to(Path(tmp_path))
 
     @staticmethod
     def get_first_id_independent_folder(folder: tp.Union[Path, str]) -> Path:
@@ -184,9 +191,7 @@ def temporary_save_path(filepath: tp.Union[Path, str]) -> tp.Iterator[Path]:
     os.rename(tmppath, filepath)
 
 
-def archive_dev_folders(
-    folders: tp.List[tp.Union[str, Path]], outfile: tp.Optional[tp.Union[str, Path]] = None
-) -> Path:
+def archive_dev_folders(folders: tp.List[tp.Union[str, Path]], outfile: tp.Optional[tp.Union[str, Path]] = None) -> Path:
     """Creates a tar.gz file with all provided folders"""
     assert isinstance(folders, (list, tuple)), "Only lists and tuples of folders are allowed"
     if outfile is None:
@@ -234,9 +239,7 @@ def cloudpickle_dump(obj: tp.Any, filename: tp.Union[str, Path]) -> None:
 
 
 # pylint: disable=too-many-locals
-def copy_process_streams(
-    process: subprocess.Popen, stdout: io.StringIO, stderr: io.StringIO, verbose: bool = False
-):
+def copy_process_streams(process: subprocess.Popen, stdout: io.StringIO, stderr: io.StringIO, verbose: bool = False):
     """
     Reads the given process stdout/stderr and write them to StringIO objects.
     Make sure that there is no deadlock because of pipe congestion.
@@ -319,18 +322,16 @@ class CommandFunction:
         The logs bufferized. They will be printed if the job fails, or sent as output of the function
         Errors are provided with the internal stderr.
         """
-        full_command = (
-            self.command + [str(x) for x in args] + [f"--{x}={y}" for x, y in kwargs.items()]
-        )  # TODO bad parsing
+        full_command = (self.command + [str(x) for x in args] + [f"--{x}={y}" for x, y in kwargs.items()])  # TODO bad parsing
         if self.verbose:
             print(f"The following command is sent: \"{' '.join(full_command)}\"")
         with subprocess.Popen(
-            full_command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-            cwd=self.cwd,
-            env=self.env,
+                full_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                cwd=self.cwd,
+                env=self.env,
         ) as process:
             stdout_buffer = io.StringIO()
             stderr_buffer = io.StringIO()
@@ -348,8 +349,6 @@ class CommandFunction:
                 # We don't print is self.verbose, as it already happened before.
                 print(stderr, file=sys.stderr)
             if retcode:
-                subprocess_error = subprocess.CalledProcessError(
-                    retcode, process.args, output=stdout, stderr=stderr
-                )
+                subprocess_error = subprocess.CalledProcessError(retcode, process.args, output=stdout, stderr=stderr)
                 raise FailedJobError(stderr) from subprocess_error
         return stdout

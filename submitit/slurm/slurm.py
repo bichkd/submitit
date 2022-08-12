@@ -309,8 +309,9 @@ class SlurmExecutor(core.PicklingExecutor):
         folder.mkdir(parents=True, exist_ok=True)
         timeout_min = self.parameters.get("time", 5)
         pickle_paths = []
-        for d in delayed_submissions:
-            pickle_path = folder / f"{uuid.uuid4().hex}.pkl"
+        array_uuid = uuid.uuid4().hex
+        for k, d in enumerate(delayed_submissions):
+            pickle_path = folder / f"{array_uuid}_{k:04}.pkl"
             d.set_timeout(timeout_min, self.max_num_timeout)
             d.dump(pickle_path)
             pickle_paths.append(pickle_path)

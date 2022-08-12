@@ -44,9 +44,7 @@ def process_job(folder: Union[Path, str]) -> None:
         if not paths.submitted_pickle.exists():
             time.sleep(1)
     if not paths.submitted_pickle.exists():
-        raise RuntimeError(
-            f"Waited for {wait_time} seconds but could not find submitted jobs in path:\n{paths.submitted_pickle}"
-        )
+        raise RuntimeError(f"Waited for {wait_time} seconds but could not find submitted jobs in path:\n{paths.submitted_pickle}")
     try:
         delayed = utils.DelayedSubmission.load(paths.submitted_pickle)
         env = job_environment.JobEnvironment()
