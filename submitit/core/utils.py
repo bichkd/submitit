@@ -102,7 +102,7 @@ class JobPaths:
 
     def move_temporary_file(self, tmp_path: tp.Union[Path, str], name: str) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
-        Path(getattr(self, name)).symlink_to(Path(tmp_path))
+        # Path(getattr(self, name)).symlink_to(Path(tmp_path))
 
     @staticmethod
     def get_first_id_independent_folder(folder: tp.Union[Path, str]) -> Path:

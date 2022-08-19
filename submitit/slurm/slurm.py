@@ -316,6 +316,7 @@ class SlurmExecutor(core.PicklingExecutor):
             d.dump(pickle_path)
             pickle_paths.append(pickle_path)
         n = len(delayed_submissions)
+
         # Make a copy of the executor, since we don't want other jobs to be
         # scheduled as arrays.
         array_ex = SlurmExecutor(self.folder, self.max_num_timeout)
@@ -323,11 +324,13 @@ class SlurmExecutor(core.PicklingExecutor):
         array_ex.parameters["map_count"] = n
         self._throttle()
 
-        first_job: core.Job[tp.Any] = array_ex._submit_command(self._submitit_command_str)
+        first_job: core.Job[tp.Any] = array_ex._submit_command(self._submitit_command_str, tmp_uuid=array_uuid)
+
         tasks_ids = list(range(first_job.num_tasks))
         jobs: List[core.Job[tp.Any]] = [SlurmJob(folder=self.folder, job_id=f"{first_job.job_id}_{a}", tasks=tasks_ids) for a in range(n)]
         for job, pickle_path in zip(jobs, pickle_paths):
             job.paths.move_temporary_file(pickle_path, "submitted_pickle")
+
         return jobs
 
     @property
@@ -335,6 +338,8 @@ class SlurmExecutor(core.PicklingExecutor):
         return " ".join([shlex.quote(sys.executable), "-u -m submitit.core._submit", shlex.quote(str(self.folder))])
 
     def _make_submission_file_text(self, command: str, uid: str) -> str:
+        if uid is not None:
+            command += ' ' + uid
         return _make_sbatch_string(command=command, folder=self.folder, **self.parameters)
 
     def _num_tasks(self) -> int:

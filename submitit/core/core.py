@@ -879,7 +879,7 @@ class PicklingExecutor(Executor):
         # this is the command submitted from "submit" to "_submit_command"
         return "dummy"
 
-    def _submit_command(self, command: str) -> Job[tp.Any]:
+    def _submit_command(self, command: str, tmp_uuid: str = None) -> Job[tp.Any]:
         """Submits a command to the cluster
         It is recommended not to use this function since the Job instance assumes pickle
         files will be created at the end of the job, and hence it will not work correctly.
@@ -898,7 +898,10 @@ class PicklingExecutor(Executor):
             A Job instance, providing access to the crun job information.
             Since it has no output, some methods will not be efficient
         """
-        tmp_uuid = uuid.uuid4().hex
+
+        if tmp_uuid is None:
+            tmp_uuid = uuid.uuid4().hex
+
         submission_file_path = (utils.JobPaths.get_first_id_independent_folder(self.folder) / f"submission_file_{tmp_uuid}.sh")
         with submission_file_path.open("w") as f:
             f.write(self._make_submission_file_text(command, tmp_uuid))
