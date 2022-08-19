@@ -47,8 +47,13 @@ class FailedSubmissionError(RuntimeError):
 class JobPaths:
     """Creates paths related to the slurm job and its submission"""
 
-    def __init__(self, folder: tp.Union[Path, str], job_id: tp.Optional[str] = None, task_id: tp.Optional[int] = None) -> None:
+    def __init__(self,
+                 folder: tp.Union[Path, str],
+                 uuid: str = None,
+                 job_id: tp.Optional[str] = None,
+                 task_id: tp.Optional[int] = None) -> None:
         self._folder = Path(folder).expanduser().absolute()
+        self._uuid = uuid
         self.job_id = job_id
         self.task_id = task_id or 0
 
@@ -67,14 +72,10 @@ class JobPaths:
     def submitted_pickle(self) -> Path:
         assert '_' in self.job_id, 'hack only works for array jobs'
 
-        subs = [p for p in self.folder.iterdir() if p.name.endswith('_0000.pkl')]
-        assert len(subs) == 1
-        submit_uuid = subs[0].stem.split('_')[0]
-
         jid, aid = self.job_id.split('_')
         aid = int(aid)
 
-        return Path(self.folder, '%s_%04d.pkl' % (submit_uuid, aid))
+        return Path(self.folder, '%s_%04d.pkl' % (self._uuid, aid))
 
     @property
     def result_pickle(self) -> Path:

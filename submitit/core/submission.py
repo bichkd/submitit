@@ -21,7 +21,7 @@ from . import job_environment, utils
 from .logger import get_logger
 
 
-def process_job(folder: Union[Path, str]) -> None:
+def process_job(folder: Union[Path, str], uuid) -> None:
     """Loads a pickled job, runs it and pickles the output
 
     Parameter
@@ -34,6 +34,7 @@ def process_job(folder: Union[Path, str]) -> None:
     Creates a picked output file next to the job file.
     """
     os.environ["SUBMITIT_FOLDER"] = str(folder)
+    os.environ["SUBMITIT_UUID"] = str(uuid)
     env = job_environment.JobEnvironment()
     paths = env.paths
     logger = get_logger()
@@ -66,5 +67,6 @@ def process_job(folder: Union[Path, str]) -> None:
 def submitit_main() -> None:
     parser = argparse.ArgumentParser(description="Run a job")
     parser.add_argument("folder", type=str, help="Folder where the jobs are stored (in subfolder)")
+    parser.add_argument("uuid", type=str, help="job uuid")
     args = parser.parse_args()
-    process_job(args.folder)
+    process_job(args.folder, args.uuid)

@@ -50,7 +50,7 @@ class JobEnvironment:
     def name(cls) -> str:
         n = cls.__name__
         if n.endswith("JobEnvironment"):
-            n = n[: -len("JobEnvironment")]
+            n = n[:-len("JobEnvironment")]
         return n.lower()
 
     @property
@@ -59,7 +59,8 @@ class JobEnvironment:
         stdout, stderr, submitted_pickle and folder.
         """
         folder = os.environ["SUBMITIT_FOLDER"]
-        return JobPaths(folder, job_id=self.job_id, task_id=self.global_rank)
+        uuid = os.environ["SUBMITIT_UUID"]
+        return JobPaths(folder, uuid, job_id=self.job_id, task_id=self.global_rank)
 
     def activated(self) -> bool:
         """Tests if we are running inside this environment.
@@ -138,9 +139,7 @@ class JobEnvironment:
         name = "SIG" + cls.USR_SIG
         out = getattr(signal, name, None)
         if out is None:
-            raise RuntimeError(
-                f"Unknown signal {name}, you may need to unset or update env var {_PREEMPT_SIG_ENV} (Eg: USR2)"
-            )
+            raise RuntimeError(f"Unknown signal {name}, you may need to unset or update env var {_PREEMPT_SIG_ENV} (Eg: USR2)")
         return out
 
     def _handle_signals(self, paths: JobPaths, submission: DelayedSubmission) -> None:
@@ -166,6 +165,7 @@ class JobEnvironment:
 
 
 class SignalHandler:
+
     def __init__(self, env: JobEnvironment, job_paths: JobPaths, delayed: DelayedSubmission) -> None:
         self.env = env
         self._job_paths = job_paths
@@ -182,26 +182,22 @@ class SignalHandler:
 
         timed_out = walltime >= guaranteed_walltime
         if timed_out:
-            self._logger.info(
-                f"Job has timed out. Ran {walltime / 60:.0f} minutes out of requested {max_walltime / 60:.0f} minutes."
-            )
+            self._logger.info(f"Job has timed out. Ran {walltime / 60:.0f} minutes out of requested {max_walltime / 60:.0f} minutes.")
         else:
-            self._logger.info(
-                f"Job has not timed out. Ran {walltime / 60:.0f} minutes out of requested {max_walltime / 60:.0f} minutes."
-            )
+            self._logger.info(f"Job has not timed out. Ran {walltime / 60:.0f} minutes out of requested {max_walltime / 60:.0f} minutes.")
         return timed_out
 
     def bypass(self, signum: int, frame: types.FrameType = None) -> None:  # pylint:disable=unused-argument
         self._logger.warning(f"Bypassing signal {signal.Signals(signum).name}")
 
     def checkpoint_and_try_requeue(
-        self, signum: int, frame: types.FrameType = None  # pylint:disable=unused-argument
+            self,
+            signum: int,
+            frame: types.FrameType = None  # pylint:disable=unused-argument
     ) -> None:
         timed_out = self.has_timed_out()
         case = "timed-out" if timed_out else "preempted"
-        self._logger.warning(
-            f"Caught signal {signal.Signals(signum).name} on {socket.gethostname()}: this job is {case}."
-        )
+        self._logger.warning(f"Caught signal {signal.Signals(signum).name} on {socket.gethostname()}: this job is {case}.")
 
         procid = self.env.global_rank
         if procid != 0:
@@ -229,7 +225,9 @@ class SignalHandler:
         self._exit()
 
     def checkpoint_and_exit(
-        self, signum: int, frame: types.FrameType = None  # pylint:disable=unused-argument
+            self,
+            signum: int,
+            frame: types.FrameType = None  # pylint:disable=unused-argument
     ) -> None:
         # Note: no signal is actually bound to `checkpoint_and_exit` but this is used by plugins.
         self._logger.info(f"Caught signal {signal.Signals(signum).name} on {socket.gethostname()}")

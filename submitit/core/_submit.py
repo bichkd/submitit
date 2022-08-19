@@ -8,4 +8,5 @@ from submitit.core.submission import submitit_main
 
 if __name__ == "__main__":
     # This script is called by Executor.submit
+    print('boop')
     submitit_main()
